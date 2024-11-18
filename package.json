@@ -15,7 +15,9 @@
     "crypto": "^1.0.1",
     "dotenv": "^16.4.5",
     "express": "^4.21.1",
+    "express-rate-limit": "^7.4.1",
     "geoip-lite": "^1.4.10",
+    "helmet": "^8.0.0",
     "jest": "^29.7.0",
     "multer": "^1.4.5-lts.1",
     "supertest": "^7.0.0"
