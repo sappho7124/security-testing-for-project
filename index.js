@@ -76,10 +76,9 @@ app.use((req, res, next) => {
 
 // Restricted access test endpoint
 app.get('/restricted', (req, res) => {
-    logAudit('Unauthorized Access Attempt', 'Unknown', req.location);
-    res.status(403).json({ message: 'Access denied to restricted area.' });
-  });
-  
+  logAudit('Unauthorized Access Attempt', 'Unknown', req.location);
+  res.status(403).json({ message: 'Access denied to restricted area.' });
+});
 
 // Dashboard to view audit logs
 app.get('/dashboard', (req, res) => {
@@ -200,4 +199,4 @@ if (require.main === module) {
   app.listen(port, () => console.log(`Server running on port ${port}`));
 }
 
-module.exports = app;
+module.exports = { app, auditLogs, enforceDataRetention };
