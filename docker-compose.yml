@@ -1,0 +1,8 @@
+version: "3.8"
+services:
+  app:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - ENCRYPTION_KEY=8bb0ff0dc0cb95256b94922207cc112c3c4d2224b1d0225c64db9911e206481a
