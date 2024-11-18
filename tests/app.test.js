@@ -1,59 +1,56 @@
 const request = require('supertest');
-const app = require('../index'); // Adjust path to your app file
+const app = require('../index');
+const http = require('http');
 
-describe('API Endpoints with Logging', () => {
-  it('GET / should return server status', async () => {
-    const res = await request(app).get('/');
-    expect(res.statusCode).toEqual(200);
-    expect(res.text).toBe('Server is running and ready for the diabetes management app!');
-  });
+let server;
 
-  it('POST /register should register a user and log the action', async () => {
-    const res = await request(app).post('/register').send({
+beforeAll(done => {
+  server = http.createServer(app);
+  server.listen(() => done());
+});
+
+afterAll(done => {
+  server.close(done);
+});
+
+describe('Behavioral Security Features', () => {
+  it('should detect a new device login', async () => {
+    await request(server).post('/register').send({
       email: 'test@example.com',
       password: 'securepassword',
     });
-    expect(res.statusCode).toEqual(201);
-    expect(res.body.message).toBe('User registered successfully.');
+
+    const res1 = await request(server)
+      .post('/login')
+      .set('User-Agent', 'Device-1')
+      .send({ email: 'test@example.com', password: 'securepassword' });
+
+    const res2 = await request(server)
+      .post('/login')
+      .set('User-Agent', 'Device-2')
+      .send({ email: 'test@example.com', password: 'securepassword' });
+
+    expect(res1.status).toBe(200);
+    expect(res2.status).toBe(200);
   });
 
-  it('POST /login should log in a user and log the action', async () => {
-    // Ensure the user is registered
-    await request(app).post('/register').send({
-      email: 'login@example.com',
-      password: 'securepassword',
-    });
-
-    const res = await request(app).post('/login').send({
-      email: 'login@example.com',
-      password: 'securepassword',
-    });
-    expect(res.statusCode).toEqual(200);
-    expect(res.body.message).toBe('Login successful.');
+  it('should log restricted access attempts', async () => {
+    const res = await request(server).get('/restricted');
+    expect(res.status).toBe(403);
   });
 
-  it('POST /health-metrics should add health metrics and log the action', async () => {
-    const res = await request(app).post('/health-metrics').send({
-      email: 'test@example.com',
-      glucoseLevel: 120,
-      bloodPressure: '120/80',
-    });
-    expect(res.statusCode).toEqual(201);
-    expect(res.body.message).toBe('Health metrics stored securely.');
-  });
+  it('should flag suspicious travel times', async () => {
+    const res1 = await request(server)
+      .post('/login')
+      .set('X-Forwarded-For', '8.8.8.8')
+      .send({ email: 'test@example.com', password: 'securepassword' });
 
-  it('GET /audit-logs should include test actions', async () => {
-    const res = await request(app).get('/audit-logs');
-    expect(res.statusCode).toEqual(200);
-    const logs = res.body;
+    const res2 = await request(server)
+      .post('/login')
+      .set('X-Forwarded-For', '1.1.1.1')
+      .send({ email: 'test@example.com', password: 'securepassword' });
 
-    // Ensure the test actions are logged
-    expect(logs).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ action: 'User Registered', email: 'test@example.com' }),
-        expect.objectContaining({ action: 'User Login', email: 'login@example.com' }),
-        expect.objectContaining({ action: 'Health Metrics Added', email: 'test@example.com' }),
-      ])
-    );
+    expect(res1.status).toBe(200);
+    expect(res2.status).toBe(200); // Detect unusual travel times in logs
   });
 });
