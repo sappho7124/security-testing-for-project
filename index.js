@@ -74,6 +74,13 @@ app.use((req, res, next) => {
   next();
 });
 
+// Restricted access test endpoint
+app.get('/restricted', (req, res) => {
+    logAudit('Unauthorized Access Attempt', 'Unknown', req.location);
+    res.status(403).json({ message: 'Access denied to restricted area.' });
+  });
+  
+
 // Dashboard to view audit logs
 app.get('/dashboard', (req, res) => {
   const logs = auditLogs.map(log => `<li>${JSON.stringify(log)}</li>`).join('');
