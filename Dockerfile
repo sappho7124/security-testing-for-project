@@ -16,7 +16,7 @@ COPY . .
 # Expose the port the app runs on
 EXPOSE 3000
 
-# Run the tests (as part of the build process)
+# Run tests during the build
 RUN npm install --save-dev jest supertest && npm test
 
 # Start the application
