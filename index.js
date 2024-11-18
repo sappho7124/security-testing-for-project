@@ -1,6 +1,9 @@
 const express = require('express');
 const bodyParser = require('body-parser');
+const multer = require('multer');
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 const dotenv = require('dotenv');
 const geoip = require('geoip-lite');
 
@@ -16,12 +19,22 @@ app.use(bodyParser.json());
 const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || '0123456789abcdef0123456789abcdef'; // 32 bytes key for AES-256
 const IV_LENGTH = 16; // For AES, this is the block size
 
+// Multer setup for file uploads
+const upload = multer({ dest: 'uploads/' });
+
 // In-memory storage
 let userData = [];
 let auditLogs = [];
-let failedLoginAttempts = {}; // { email: { attempts: number, lastAttempt: timestamp } }
-let knownDevices = {}; // { email: [deviceFingerprints] }
-let restrictedAccessAttempts = {}; // { email: { endpoint: count } }
+let failedLoginAttempts = {};
+
+// Data Retention Policies
+const DATA_RETENTION_PERIOD_MS = 180 * 24 * 60 * 60 * 1000; // 180 days
+
+function enforceDataRetention() {
+  const now = Date.now();
+  auditLogs = auditLogs.filter(log => now - new Date(log.timestamp).getTime() <= DATA_RETENTION_PERIOD_MS);
+}
+setInterval(enforceDataRetention, 24 * 60 * 60 * 1000); // Run daily
 
 // Utility functions
 function encrypt(text) {
@@ -42,43 +55,68 @@ function decrypt(text) {
   return decrypted.toString();
 }
 
-function getLocationFromIP(ip) {
-  const geo = geoip.lookup(ip);
-  if (geo) {
-    return {
-      city: geo.city || 'Unknown',
-      region: geo.region || 'Unknown',
-      country: geo.country || 'Unknown',
-    };
-  }
-  return { city: 'Unknown', region: 'Unknown', country: 'Unknown' };
-}
-
-function calculateTravelTime(location1, location2) {
-  // Dummy function: Replace with actual distance calculation and travel time logic
-  if (!location1 || !location2) return Infinity;
-  return Math.random() * 1000; // Simulate time in seconds
+function logAudit(action, email, location, details = null) {
+  const log = {
+    action,
+    email,
+    location,
+    timestamp: new Date(),
+    ...(details ? { details } : {}),
+  };
+  auditLogs.push(log);
+  console.log(JSON.stringify(log, null, 2)); // Log to console for debugging/testing
 }
 
 // Middleware to log requests with location
 app.use((req, res, next) => {
   const ip = req.headers['x-forwarded-for'] || req.connection.remoteAddress;
-  req.location = getLocationFromIP(ip);
-  req.deviceFingerprint = `${req.headers['user-agent']}-${req.connection.remotePort}`;
+  req.location = geoip.lookup(ip) || { city: 'Unknown', country: 'Unknown' };
   next();
 });
 
-// Middleware for restricted access tracking
-app.use((req, res, next) => {
+// Dashboard to view audit logs
+app.get('/dashboard', (req, res) => {
+  const logs = auditLogs.map(log => `<li>${JSON.stringify(log)}</li>`).join('');
+  const dashboardHTML = `
+    <html>
+      <head><title>Request Dashboard</title></head>
+      <body>
+        <h1>Request Logs Dashboard</h1>
+        <ul>${logs}</ul>
+      </body>
+    </html>
+  `;
+  res.send(dashboardHTML);
+});
+
+// Simulate JSON file processing
+app.post('/upload-json', upload.single('file'), (req, res) => {
   const { email } = req.body;
-  if (!email) return next();
 
-  if (!restrictedAccessAttempts[email]) restrictedAccessAttempts[email] = {};
+  if (!email || !req.file) {
+    return res.status(400).json({ error: 'Email and file are required.' });
+  }
 
-  const endpoint = req.path;
-  restrictedAccessAttempts[email][endpoint] = (restrictedAccessAttempts[email][endpoint] || 0) + 1;
+  const filePath = path.resolve(__dirname, req.file.path);
+  const fileContent = fs.readFileSync(filePath, 'utf-8');
 
-  next();
+  try {
+    const data = JSON.parse(fileContent);
+
+    const encryptedData = {
+      name: encrypt(data.name),
+      healthMetrics: encrypt(JSON.stringify(data.healthMetrics)),
+    };
+
+    logAudit('JSON File Uploaded', email, req.location, { fileName: req.file.originalname });
+    res.status(201).json({ message: 'File processed successfully.', encryptedData });
+
+    fs.unlinkSync(filePath);
+  } catch (error) {
+    fs.unlinkSync(filePath);
+    logAudit('Invalid JSON File Upload Attempt', email, req.location, { error: error.message });
+    return res.status(400).json({ error: 'Invalid JSON file.' });
+  }
 });
 
 // Register endpoint
@@ -89,87 +127,70 @@ app.post('/register', (req, res) => {
   const encryptedPassword = encrypt(password);
   userData.push({ email, encryptedPassword });
 
-  auditLogs.push({
-    action: 'User Registered',
-    email,
-    location: req.location,
-    timestamp: new Date(),
-  });
-
+  logAudit('User Registered', email, req.location);
   res.status(201).json({ message: 'User registered successfully.' });
 });
 
 // Login endpoint
 app.post('/login', (req, res) => {
   const { email, password } = req.body;
-  if (!email || !password) return res.status(400).json({ error: 'Email and password are required.' });
 
-  const user = userData.find(u => u.email === email);
-  if (!user) return res.status(401).json({ error: 'User not found.' });
-
-  const decryptedPassword = decrypt(user.encryptedPassword);
-  if (password !== decryptedPassword) return res.status(401).json({ error: 'Invalid password.' });
-
-  // Device Fingerprinting
-  knownDevices[email] = knownDevices[email] || [];
-  if (!knownDevices[email].includes(req.deviceFingerprint)) {
-    knownDevices[email].push(req.deviceFingerprint);
-    auditLogs.push({
-      action: 'New Device Detected',
-      email,
-      location: req.location,
-      timestamp: new Date(),
-    });
+  if (!email || !password) {
+    return res.status(400).json({ error: 'Email and password are required.' });
   }
 
-  auditLogs.push({
-    action: 'User Login',
-    email,
-    location: req.location,
-    timestamp: new Date(),
-  });
+  const user = userData.find(u => u.email === email);
+  if (!user) {
+    logAudit('Failed Login: User Not Found', email, req.location);
+    return res.status(401).json({ error: 'User not found.' });
+  }
 
+  const decryptedPassword = decrypt(user.encryptedPassword);
+  if (password !== decryptedPassword) {
+    failedLoginAttempts[email] = (failedLoginAttempts[email] || 0) + 1;
+
+    if (failedLoginAttempts[email] > 5) {
+      logAudit('Brute Force Prevention Triggered', email, req.location);
+      return res.status(429).json({ error: 'Too many login attempts. Please try again later.' });
+    }
+
+    logAudit('Failed Login: Incorrect Password', email, req.location);
+    return res.status(401).json({ error: 'Invalid password.' });
+  }
+
+  failedLoginAttempts[email] = 0;
+  logAudit('User Login', email, req.location);
   res.status(200).json({ message: 'Login successful.' });
 });
 
 // Add health metrics endpoint
 app.post('/health-metrics', (req, res) => {
-  const { email, glucoseLevel, bloodPressure } = req.body;
-  if (!email || !glucoseLevel || !bloodPressure) {
-    return res.status(400).json({ error: 'All fields are required.' });
+  try {
+    const { email, glucoseLevel, bloodPressure } = req.body;
+
+    if (!email || !glucoseLevel || !bloodPressure) {
+      throw new Error('Missing required fields.');
+    }
+
+    const encryptedGlucose = encrypt(glucoseLevel.toString());
+    const encryptedBloodPressure = encrypt(bloodPressure.toString());
+
+    logAudit('Health Metrics Submitted', email, req.location);
+    res.status(201).json({ message: 'Metrics stored securely.', encryptedData: { encryptedGlucose, encryptedBloodPressure } });
+  } catch (error) {
+    logAudit('Failed Health Metrics Submission', req.body.email || 'Unknown', req.location, { error: error.message });
+    res.status(400).json({ error: error.message });
   }
-
-  const encryptedGlucose = encrypt(glucoseLevel.toString());
-  const encryptedBloodPressure = encrypt(bloodPressure.toString());
-
-  auditLogs.push({
-    action: 'Health Metrics Added',
-    email,
-    location: req.location,
-    timestamp: new Date(),
-  });
-
-  res.status(201).json({
-    message: 'Health metrics stored securely.',
-    encryptedData: { glucose: encryptedGlucose, bloodPressure: encryptedBloodPressure },
-  });
 });
 
-// Audit logs endpoint
+// Endpoint to view audit logs
 app.get('/audit-logs', (req, res) => {
   res.status(200).json(auditLogs);
 });
 
-// Restricted area endpoint
-app.get('/restricted', (req, res) => {
-  res.status(403).json({ message: 'Access denied to restricted area.' });
-});
-
 // Start server if not in test mode
 if (require.main === module) {
-  app.listen(port, () => {
-    console.log(`Server is running on port ${port}`);
-  });
+  app.listen(port, () => console.log(`Server running on port ${port}`));
 }
 
 module.exports = app;
